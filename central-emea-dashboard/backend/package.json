@@ -1,7 +1,7 @@
 {
   "name": "central-emea-dashboard-backend",
   "version": "1.0.0",
-  "description": "Backend for Central EMEA Go-to-Market Dashboard powered by Redis Cloud",
+  "description": "Backend API for Central EMEA Go-to-Market Dashboard powered by Redis Cloud",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -13,18 +13,19 @@
     "redis",
     "dashboard",
     "sales",
-    "emea"
+    "emea",
+    "express"
   ],
   "author": "Thomas Gregg",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.3.6",
+    "express": "^4.18.2",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
-    "express": "^4.18.2",
     "jsonwebtoken": "^9.0.0",
-    "morgan": "^1.10.0",
-    "redis": "^4.6.7"
+    "redis": "^4.6.6",
+    "bcryptjs": "^2.4.3",
+    "morgan": "^1.10.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

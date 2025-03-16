@@ -1,9 +1,12 @@
 {
-  "name": "redis-central-emea-dashboard-api",
+  "name": "central-emea-dashboard-api",
   "version": "1.0.0",
-  "description": "API for Central EMEA Dashboard",
-  "type": "module",
+  "description": "API for Central EMEA Go-to-Market Dashboard powered by Redis Cloud",
   "main": "server.js",
-  "author": "Thomas Gregg",
-  "license": "MIT"
+  "type": "module",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "jsonwebtoken": "^9.0.0"
+  }
 } 
