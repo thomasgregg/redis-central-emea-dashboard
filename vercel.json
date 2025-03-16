@@ -2,7 +2,7 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "central-emea-dashboard/frontend/dist",
-  "installCommand": "npm install",
+  "installCommand": "npm install --no-fund",
   "framework": null,
   "functions": {
     "api/**/*.js": {
@@ -21,6 +21,13 @@
     "REDIS_PASSWORD": "ITGzDD2Txw2vUatIMjXispHBbN1cU91z",
     "JWT_SECRET": "central-emea-dashboard-secret",
     "NODE_ENV": "production",
-    "FRONTEND_URL": "https://redis-central-emea-dashboard.vercel.app"
+    "FRONTEND_URL": "https://redis-central-emea-dashboard.vercel.app",
+    "REDIS_TIMEOUT_ENABLED": "true",
+    "REDIS_CONNECTION_TIMEOUT": "5000"
+  },
+  "build": {
+    "env": {
+      "NPM_FLAGS": "--no-fund --verbose"
+    }
   }
 } 

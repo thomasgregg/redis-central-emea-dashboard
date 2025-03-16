@@ -16,7 +16,10 @@ console.log('Environment variables:', {
   REDIS_PASSWORD: process.env.REDIS_PASSWORD ? '***' : 'not set',
   JWT_SECRET: process.env.JWT_SECRET ? '***' : 'not set',
   NODE_ENV: process.env.NODE_ENV,
-  VERCEL: process.env.VERCEL
+  VERCEL: process.env.VERCEL,
+  REDIS_TIMEOUT_ENABLED: process.env.REDIS_TIMEOUT_ENABLED,
+  REDIS_CONNECTION_TIMEOUT: process.env.REDIS_CONNECTION_TIMEOUT,
+  REDIS_DISABLED: process.env.REDIS_DISABLED
 });
 
 // Configure middleware
@@ -27,71 +30,95 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Redis connection
-console.log('Setting up Redis client...');
-let redisClient;
-try {
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
-    socket: {
-      connectTimeout: 10000, // 10 seconds
-      reconnectStrategy: (retries) => {
-        console.log(`Redis reconnect attempt ${retries}`);
-        if (retries > 5) {
-          console.log('Maximum Redis reconnection attempts reached');
-          return new Error('Maximum Redis reconnection attempts reached');
-        }
-        return Math.min(retries * 1000, 5000);
-      }
-    }
-  });
-  console.log('Redis client created successfully');
-  
-  // Add event listeners for Redis client
-  redisClient.on('error', (err) => {
-    console.error('Redis client error:', err);
-  });
-  
-  redisClient.on('connect', () => {
-    console.log('Redis client connecting...');
-  });
-  
-  redisClient.on('ready', () => {
-    console.log('Redis client ready');
-  });
-  
-  redisClient.on('end', () => {
-    console.log('Redis connection ended');
-  });
-  
-  redisClient.on('reconnecting', () => {
-    console.log('Redis client reconnecting...');
-  });
-} catch (error) {
-  console.error('Error creating Redis client:', error);
+// Check if Redis is disabled
+const isRedisDisabled = process.env.REDIS_DISABLED === 'true';
+if (isRedisDisabled) {
+  console.log('Redis is disabled by environment variable. Using fallback data only.');
 }
 
-// Connect to Redis with timeout protection
-(async () => {
+// Redis connection
+let redisClient = null;
+if (!isRedisDisabled) {
+  console.log('Setting up Redis client...');
   try {
-    console.log('Attempting to connect to Redis...');
+    // Get timeout from environment or use default
+    const connectionTimeout = parseInt(process.env.REDIS_CONNECTION_TIMEOUT) || 10000;
+    console.log(`Using Redis connection timeout: ${connectionTimeout}ms`);
     
-    // Create a promise that rejects after timeout
-    const connectWithTimeout = Promise.race([
-      redisClient.connect(),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Redis connection timeout after 15 seconds')), 15000)
-      )
-    ]);
+    redisClient = createClient({
+      url: `redis://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
+      socket: {
+        connectTimeout: connectionTimeout,
+        reconnectStrategy: (retries) => {
+          console.log(`Redis reconnect attempt ${retries}`);
+          if (retries > 3) {
+            console.log('Maximum Redis reconnection attempts reached');
+            return new Error('Maximum Redis reconnection attempts reached');
+          }
+          return Math.min(retries * 1000, 3000);
+        }
+      }
+    });
+    console.log('Redis client created successfully');
     
-    await connectWithTimeout;
-    console.log('Connected to Redis successfully');
-  } catch (err) {
-    console.error('Redis connection error:', err);
-    // Continue without Redis in serverless environment
-    console.log('Will continue without Redis connection and use fallback data');
+    // Add event listeners for Redis client
+    redisClient.on('error', (err) => {
+      console.error('Redis client error:', err);
+    });
+    
+    redisClient.on('connect', () => {
+      console.log('Redis client connecting...');
+    });
+    
+    redisClient.on('ready', () => {
+      console.log('Redis client ready');
+    });
+    
+    redisClient.on('end', () => {
+      console.log('Redis connection ended');
+    });
+    
+    redisClient.on('reconnecting', () => {
+      console.log('Redis client reconnecting...');
+    });
+  } catch (error) {
+    console.error('Error creating Redis client:', error);
   }
-})();
+
+  // Connect to Redis with timeout protection
+  (async () => {
+    try {
+      console.log('Attempting to connect to Redis...');
+      
+      // Get timeout from environment or use default
+      const timeoutEnabled = process.env.REDIS_TIMEOUT_ENABLED === 'true';
+      const timeoutDuration = parseInt(process.env.REDIS_CONNECTION_TIMEOUT) || 15000;
+      
+      if (timeoutEnabled) {
+        console.log(`Redis connection timeout enabled: ${timeoutDuration}ms`);
+        // Create a promise that rejects after timeout
+        const connectWithTimeout = Promise.race([
+          redisClient.connect(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`Redis connection timeout after ${timeoutDuration}ms`)), timeoutDuration)
+          )
+        ]);
+        
+        await connectWithTimeout;
+      } else {
+        console.log('Redis connection timeout disabled');
+        await redisClient.connect();
+      }
+      
+      console.log('Connected to Redis successfully');
+    } catch (err) {
+      console.error('Redis connection error:', err);
+      console.log('Will continue without Redis connection and use fallback data');
+    }
+  })();
+} else {
+  console.log('Skipping Redis client creation and connection');
+}
 
 // Add a simple root route for debugging
 app.get('/', (req, res) => {
