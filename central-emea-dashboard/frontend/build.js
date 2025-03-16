@@ -13,6 +13,19 @@ if (!fs.existsSync(distDir)) {
   console.log('Created dist directory');
 }
 
+// Create login and dashboard directories
+const loginDir = path.join(distDir, 'login');
+if (!fs.existsSync(loginDir)) {
+  fs.mkdirSync(loginDir, { recursive: true });
+  console.log('Created login directory');
+}
+
+const dashboardDir = path.join(distDir, 'dashboard');
+if (!fs.existsSync(dashboardDir)) {
+  fs.mkdirSync(dashboardDir, { recursive: true });
+  console.log('Created dashboard directory');
+}
+
 try {
   // Install required dependencies
   console.log('Installing required dependencies...');
@@ -109,14 +122,10 @@ setTimeout(() => {
     
     fs.writeFileSync(path.join(distDir, 'bundle.js'), fallbackBundle);
     console.log('Created fallback bundle.js');
-    
-    // Create a simple login page
-    const loginDir = path.join(distDir, 'login');
-    if (!fs.existsSync(loginDir)) {
-      fs.mkdirSync(loginDir, { recursive: true });
-    }
-    
-    const loginHtml = `<!DOCTYPE html>
+  }
+
+  // Create a simple login page
+  const loginHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -199,17 +208,12 @@ setTimeout(() => {
   </script>
 </body>
 </html>`;
-    
-    fs.writeFileSync(path.join(loginDir, 'index.html'), loginHtml);
-    console.log('Created login page');
-    
-    // Create a simple dashboard page
-    const dashboardDir = path.join(distDir, 'dashboard');
-    if (!fs.existsSync(dashboardDir)) {
-      fs.mkdirSync(dashboardDir, { recursive: true });
-    }
-    
-    const dashboardHtml = `<!DOCTYPE html>
+  
+  fs.writeFileSync(path.join(loginDir, 'index.html'), loginHtml);
+  console.log('Created login page');
+  
+  // Create a simple dashboard page
+  const dashboardHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -266,10 +270,9 @@ setTimeout(() => {
   </script>
 </body>
 </html>`;
-    
-    fs.writeFileSync(path.join(dashboardDir, 'index.html'), dashboardHtml);
-    console.log('Created dashboard page');
-  }
+  
+  fs.writeFileSync(path.join(dashboardDir, 'index.html'), dashboardHtml);
+  console.log('Created dashboard page');
 
   // Copy static assets
   const publicDir = path.resolve(__dirname, 'public');
