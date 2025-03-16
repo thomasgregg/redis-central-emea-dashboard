@@ -1,8 +1,15 @@
 const path = require('path');
-const HtmlWebpackPlugin = require('html-webpack-plugin');
-const webpack = require('webpack');
 
-module.exports = {
+// Try to load HtmlWebpackPlugin, but don't fail if it's not available
+let HtmlWebpackPlugin;
+try {
+  HtmlWebpackPlugin = require('html-webpack-plugin');
+} catch (error) {
+  console.warn('HtmlWebpackPlugin not found, will not generate HTML file');
+}
+
+const config = {
+  mode: 'production',
   entry: './src/index.js',
   output: {
     path: path.resolve(__dirname, 'dist'),
@@ -30,20 +37,17 @@ module.exports = {
   resolve: {
     extensions: ['.js', '.jsx']
   },
-  plugins: [
+  plugins: []
+};
+
+// Add HtmlWebpackPlugin if available
+if (HtmlWebpackPlugin) {
+  config.plugins.push(
     new HtmlWebpackPlugin({
-      template: './public/index.html',
+      template: './src/index.html',
       filename: 'index.html'
-    }),
-    new webpack.DefinePlugin({
-      'process.env.API_URL': JSON.stringify(process.env.API_URL || '/api')
     })
-  ],
-  devServer: {
-    historyApiFallback: true,
-    port: 3000,
-    proxy: {
-      '/api': 'http://localhost:5001'
-    }
-  }
-}; 
+  );
+}
+
+module.exports = config; 
