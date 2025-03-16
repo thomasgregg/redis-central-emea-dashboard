@@ -38,13 +38,22 @@ try {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="0;url=/login">
   <title>Central EMEA Dashboard</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" />
   <link rel="stylesheet" href="/styles.css" />
-  <!-- Material UI and React dependencies -->
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/@mui/material@5.12.1/umd/material-ui.production.min.js"></script>
+  <style>
+    body {
+      font-family: 'Roboto', sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background-color: #f5f5f5;
+      text-align: center;
+    }
+  </style>
   <!-- Immediate redirect if page doesn't load -->
   <script>
     // Redirect to login page immediately
@@ -285,6 +294,10 @@ setTimeout(() => {
   // Create a vercel.json file in the dist directory
   const vercelConfig = {
     "version": 2,
+    "redirects": [
+      { "source": "/", "destination": "/login", "permanent": false },
+      { "source": "/index.html", "destination": "/login", "permanent": false }
+    ],
     "routes": [
       { "src": "/api/(.*)", "dest": "/api/$1" },
       { "src": "/login", "dest": "/login/index.html" },
@@ -336,6 +349,10 @@ setTimeout(() => {
 
   fs.writeFileSync(path.join(distDir, 'index.redirect.html'), redirectHtml);
   console.log('Created redirect index.html');
+
+  // Copy the login page directly as index.html as a last resort
+  fs.copyFileSync(path.join(loginDir, 'index.html'), path.join(distDir, 'index.html'));
+  console.log('Copied login page as index.html');
 
   console.log('Build completed successfully!');
   process.exit(0);
