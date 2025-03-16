@@ -36,5 +36,9 @@
     "env": {
       "NPM_FLAGS": "--no-fund --verbose"
     }
+  },
+  "github": {
+    "enabled": true,
+    "silent": false
   }
 } 
