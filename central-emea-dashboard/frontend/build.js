@@ -32,8 +32,15 @@ try {
   execSync('npm install --no-fund esbuild', { stdio: 'inherit' });
   console.log('Dependencies installed successfully');
 
-  // Create a simple index.html file
-  const htmlContent = `<!DOCTYPE html>
+  // Create a simple index.html file by copying from src
+  try {
+    const srcIndexPath = path.resolve(__dirname, 'src', 'index.html');
+    if (fs.existsSync(srcIndexPath)) {
+      fs.copyFileSync(srcIndexPath, path.join(distDir, 'index.html'));
+      console.log('Copied src/index.html to dist/index.html');
+    } else {
+      // Fallback to creating a simple index.html file
+      const htmlContent = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -78,8 +85,12 @@ try {
 </body>
 </html>`;
 
-  fs.writeFileSync(path.join(distDir, 'index.html'), htmlContent);
-  console.log('Created index.html');
+      fs.writeFileSync(path.join(distDir, 'index.html'), htmlContent);
+      console.log('Created index.html');
+    }
+  } catch (error) {
+    console.error('Error creating index.html:', error.message);
+  }
 
   // Create a simple CSS file
   const cssContent = `
