@@ -1,0 +1,1422 @@
+import express from 'express';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
+import { createClient } from 'redis';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+// Initialize Express app
+const app = express();
+const PORT = process.env.PORT || 5001;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Redis client setup
+const client = createClient({
+    url: `redis://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`
+});
+
+client.on('connect', () => {
+    console.log('Connected to Redis');
+    console.log('Redis connection details:', {
+        host: process.env.REDIS_HOST,
+        port: process.env.REDIS_PORT,
+        username: process.env.REDIS_USERNAME
+    });
+});
+
+client.on('ready', () => {
+    console.log('Redis client ready');
+    console.log('Connected to Redis Cloud');
+});
+
+client.on('error', (err) => {
+    console.error('Redis Client Error:', err);
+});
+
+// Connect to Redis
+await client.connect();
+console.log('Connected to Redis Cloud');
+
+// Function to store event data
+async function storeEventData(key, data) {
+    try {
+        const jsonData = JSON.stringify(data);
+        await client.set(key, jsonData);
+        console.log(`Stored event ${key} successfully`);
+    } catch (error) {
+        console.error(`Error storing event ${key}:`, error);
+        throw error;
+    }
+}
+
+// Function to retrieve event data
+async function getEventData(key) {
+    try {
+        const data = await client.get(key);
+        return data ? JSON.parse(data) : null;
+    } catch (error) {
+        console.error(`Error retrieving event ${key}:`, error);
+        throw error;
+    }
+}
+
+// Authentication middleware
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    console.log('Auth header:', authHeader);
+    console.log('Token:', token);
+
+    if (!token) {
+        console.log('No token provided');
+        return res.status(401).json({ message: 'No token provided' });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) {
+            console.error('Token verification error:', err);
+            return res.status(403).json({ message: 'Invalid token' });
+        }
+        console.log('Token verified for user:', user);
+        req.user = user;
+        next();
+    });
+};
+
+// Connect to Redis
+const connectRedis = async () => {
+    try {
+        // Connect to Redis
+        await client.connect();
+        console.log('Connected to Redis Cloud');
+        
+        // Initialize cache
+        dataCache = {
+            pipeline: [],
+            events: [],
+            salesData: [],
+            territories: [],
+            partners: [],
+            meddpicc: [],
+            lastUpdated: 0
+        };
+        
+        // Check if sample data exists
+        const salesDataExists = await client.exists('sales:data');
+        
+        if (!salesDataExists) {
+            console.log('Initializing sample data...');
+            await generateSampleSalesData();
+            console.log('Sample data initialized successfully');
+        } else {
+            console.log('Sample data already exists, loading from Redis');
+            await refreshCache();
+        }
+        
+    } catch (error) {
+        console.error('Error connecting to Redis:', error);
+        process.exit(1);  // Exit if we can't connect to Redis
+    }
+};
+
+// Function to refresh the cache
+const refreshCache = async () => {
+    try {
+        console.log('Refreshing data cache...');
+        
+        // Get last 24 months of sales data from Redis
+        const currentDate = new Date();
+        const currentYear = currentDate.getFullYear();
+        const currentMonth = currentDate.getMonth();
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        let salesData = [];
+        
+        for (let i = 23; i >= 0; i--) {
+            const date = new Date(currentYear, currentMonth - i, 1);
+            const year = date.getFullYear();
+            const month = months[date.getMonth()];
+            const key = `sales:${year}:${month}`;
+            
+            const monthData = await client.hGetAll(key);
+            if (Object.keys(monthData).length > 0) {
+                salesData.push({
+                    ...monthData,
+                    year: parseInt(monthData.year),
+                    revenue: parseFloat(monthData.revenue),
+                    deals: parseInt(monthData.deals),
+                    avgDealSize: parseFloat(monthData.avgDealSize),
+                    leadGeneration: parseInt(monthData.leadGeneration),
+                    conversionRate: parseFloat(monthData.conversionRate)
+                });
+            }
+        }
+        
+        // If no data found, generate new data
+        if (salesData.length === 0) {
+            console.log('No sales data found, generating new data...');
+            salesData = await generateSampleSalesData();
+        }
+        
+        // Sort data chronologically
+        salesData.sort((a, b) => {
+            if (a.year !== b.year) return a.year - b.year;
+            return months.indexOf(a.month) - months.indexOf(b.month);
+        });
+        
+        // Update cache
+        dataCache = {
+            ...dataCache,
+            salesData: salesData,
+            lastUpdated: Date.now()
+        };
+        
+        console.log('Cache refreshed successfully');
+    } catch (error) {
+        console.error('Error refreshing cache:', error);
+        throw error;
+    }
+};
+
+// Cache for Redis data
+let dataCache = {
+    pipeline: null,
+    events: null,
+    salesData: null,
+    territories: null,
+    lastUpdated: null
+};
+
+// Cache TTL in milliseconds (5 minutes)
+const CACHE_TTL = 5 * 60 * 1000;
+
+// Routes
+
+// Login route
+app.post('/api/login', async (req, res) => {
+    const { email, password } = req.body;
+    console.log('Login attempt:', email);
+
+    try {
+        // Check if user exists and get user data
+        const userData = await client.hGetAll(`user:${email}`);
+        console.log('User data from Redis:', userData);
+
+        if (!userData || Object.keys(userData).length === 0) {
+            console.log('User not found:', email);
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        // Check password
+        if (userData.password !== password) {
+            console.log('Invalid password for user:', email);
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        // Generate token
+        const token = jwt.sign(
+            { 
+                email: userData.email,
+                name: userData.name,
+                role: userData.role
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+
+        console.log('Login successful for user:', email);
+        res.json({
+            token,
+            user: {
+                email: userData.email,
+                name: userData.name,
+                role: userData.role
+            }
+        });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Protected routes
+app.use('/api/*', authenticateToken);
+
+// API endpoint for dashboard data
+app.get('/api/dashboard', async (req, res) => {
+    try {
+        await checkAndRefreshCache();
+        
+        // Get the current quarter
+        const currentDate = new Date();
+        const currentQuarter = 'Q' + (Math.floor(currentDate.getMonth() / 3) + 1);
+        const currentYear = currentDate.getFullYear();
+        
+        // Create dashboard data with sample data
+        const dashboardData = {
+            quarterlyPerformance: {
+                targets: {
+                    revenue: (Math.random() * 5 + 5).toFixed(2) + 'M',
+                    newCustomers: Math.floor(Math.random() * 50 + 50),
+                    expansions: Math.floor(Math.random() * 30 + 20),
+                    renewals: Math.floor(Math.random() * 40 + 80) + '%'
+                },
+                actuals: {
+                    revenue: (Math.random() * 5 + 4).toFixed(2) + 'M',
+                    newCustomers: Math.floor(Math.random() * 50 + 40),
+                    expansions: Math.floor(Math.random() * 30 + 15),
+                    renewals: Math.floor(Math.random() * 40 + 75) + '%'
+                }
+            },
+            pipeline: dataCache.pipeline.slice(0, 5),
+            upcomingEvents: dataCache.events
+                .filter(event => new Date(event.startDate) > new Date())
+                .sort((a, b) => new Date(a.startDate) - new Date(b.startDate))
+                .slice(0, 3),
+            salesData: dataCache.salesData.slice(-12), // Last 12 months
+            territories: dataCache.territories
+        };
+        
+        res.json(dashboardData);
+    } catch (error) {
+        console.error('Error fetching dashboard data:', error);
+        res.status(500).json({ message: 'Error fetching dashboard data' });
+    }
+});
+
+// API endpoint for pipeline data
+app.get('/api/pipeline', async (req, res) => {
+    try {
+        console.log('Fetching pipeline data from Redis...');
+        
+        // Get all pipeline keys from Redis
+        const pipelineKeys = await client.keys('pipeline:*');
+        let pipelineData = [];
+        
+        // Retrieve each pipeline entry's data
+        for (const key of pipelineKeys) {
+            const data = await client.hGetAll(key);
+            if (Object.keys(data).length > 0) {
+                // Convert numeric fields back to numbers
+                pipelineData.push({
+                    ...data,
+                    value: parseFloat(data.value),
+                    probability: parseInt(data.probability)
+                });
+            }
+        }
+        
+        // If no data in Redis, return empty array
+        if (pipelineData.length === 0) {
+            console.log('No pipeline data found in Redis');
+            pipelineData = [];
+        }
+        
+        console.log(`Retrieved ${pipelineData.length} pipeline entries from Redis`);
+        res.json(pipelineData);
+    } catch (error) {
+        console.error('Error fetching pipeline data:', error);
+        res.status(500).json({ message: 'Error fetching pipeline data' });
+    }
+});
+
+// Reset pipeline data
+app.post('/api/reset-pipeline', async (req, res) => {
+    try {
+        console.log('Storing pipeline data in Redis...');
+        
+        // Enterprise companies by region with their use cases
+        const companiesByRegion = {
+            'DACH': {
+                'Germany': [
+                    {
+                        name: 'Deutsche Bank AG',
+                        useCase: 'Real-time Fraud Detection Platform'
+                    },
+                    {
+                        name: 'SAP SE',
+                        useCase: 'Enterprise Caching Solution'
+                    },
+                    {
+                        name: 'BMW Group',
+                        useCase: 'IoT Data Processing Platform'
+                    },
+                    {
+                        name: 'Allianz SE',
+                        useCase: 'Insurance Claims Processing System'
+                    },
+                    {
+                        name: 'Deutsche Telekom',
+                        useCase: 'Real-time Customer Data Platform'
+                    }
+                ],
+                'Austria': [
+                    {
+                        name: 'Erste Group Bank',
+                        useCase: 'Banking Analytics Platform'
+                    },
+                    {
+                        name: 'OMV AG',
+                        useCase: 'Energy Trading Platform'
+                    },
+                    {
+                        name: 'Raiffeisen Bank',
+                        useCase: 'Real-time Transaction Processing'
+                    },
+                    {
+                        name: 'Voestalpine AG',
+                        useCase: 'Manufacturing Analytics System'
+                    }
+                ],
+                'Switzerland': [
+                    {
+                        name: 'UBS Group',
+                        useCase: 'Wealth Management Platform'
+                    },
+                    {
+                        name: 'Nestlé SA',
+                        useCase: 'Supply Chain Optimization'
+                    },
+                    {
+                        name: 'Roche Holding',
+                        useCase: 'Clinical Data Platform'
+                    },
+                    {
+                        name: 'Credit Suisse',
+                        useCase: 'Trading Analytics System'
+                    },
+                    {
+                        name: 'Swiss Re',
+                        useCase: 'Risk Assessment Platform'
+                    }
+                ]
+            },
+            'Benelux': {
+                'Netherlands': [
+                    {
+                        name: 'ING Group',
+                        useCase: 'Digital Banking Platform'
+                    },
+                    {
+                        name: 'ASML Holding',
+                        useCase: 'Semiconductor Process Control'
+                    },
+                    {
+                        name: 'Philips NV',
+                        useCase: 'Healthcare Analytics Platform'
+                    },
+                    {
+                        name: 'Ahold Delhaize',
+                        useCase: 'Retail Analytics System'
+                    },
+                    {
+                        name: 'ABN AMRO',
+                        useCase: 'Financial Services Platform'
+                    }
+                ],
+                'Belgium': [
+                    {
+                        name: 'KBC Group',
+                        useCase: 'Banking and Insurance Platform'
+                    },
+                    {
+                        name: 'Proximus',
+                        useCase: 'Telecom Analytics System'
+                    },
+                    {
+                        name: 'Solvay SA',
+                        useCase: 'Chemical Process Optimization'
+                    },
+                    {
+                        name: 'UCB SA',
+                        useCase: 'Pharmaceutical Research Platform'
+                    }
+                ],
+                'Luxembourg': [
+                    {
+                        name: 'ArcelorMittal',
+                        useCase: 'Steel Production Optimization'
+                    },
+                    {
+                        name: 'SES SA',
+                        useCase: 'Satellite Communications Platform'
+                    },
+                    {
+                        name: 'Banque Internationale Luxembourg',
+                        useCase: 'Private Banking System'
+                    }
+                ]
+            }
+        };
+
+        const stages = ['Prospecting', 'Qualification', 'Proposal', 'Negotiation', 'Closed Won'];
+        const pipelineData = [];
+        
+        // Delete existing pipeline data
+        const existingKeys = await client.keys('pipeline:*');
+        if (existingKeys.length > 0) {
+            await client.del(existingKeys);
+        }
+        
+        // Generate and store pipeline data
+        let dealIndex = 0;
+        Object.entries(companiesByRegion).forEach(([region, countries]) => {
+            Object.entries(countries).forEach(([country, companies]) => {
+                companies.forEach((company) => {
+                    // Generate 1-2 deals per company with 70% probability
+                    const numDeals = Math.random() < 0.7 ? Math.floor(Math.random() * 2) + 1 : 0;
+                    
+                    for (let i = 0; i < numDeals; i++) {
+                        // Generate enterprise-level deal values (500K to 5M)
+                        const value = Math.floor(500000 + Math.random() * 4500000);
+                        
+                        // Generate probability based on stage
+                        const stageIndex = Math.floor(Math.random() * stages.length);
+                        const stage = stages[stageIndex];
+                        const baseProbability = (stageIndex + 1) * 20;
+                        const probability = Math.min(Math.floor(baseProbability + (Math.random() * 10)), 95);
+                        
+                        // Generate expected close date within next 6 months
+                        const expectedCloseDate = new Date();
+                        expectedCloseDate.setDate(expectedCloseDate.getDate() + Math.floor(Math.random() * 180));
+                        
+                        const data = {
+                            id: `opp-${dealIndex + 1}`,
+                            company: company.name,
+                            region: `${region} - ${country}`,
+                            useCase: company.useCase,
+                            value: value.toString(),
+                            stage,
+                            probability: probability.toString(),
+                            expectedCloseDate: expectedCloseDate.toISOString()
+                        };
+                        
+                        // Store in Redis
+                        const key = `pipeline:${dealIndex}`;
+                        client.hSet(key, data);
+                        pipelineData.push({
+                            ...data,
+                            value: parseFloat(data.value),
+                            probability: parseInt(data.probability)
+                        });
+                        
+                        dealIndex++;
+                    }
+                });
+            });
+        });
+        
+        // Update cache
+        dataCache.pipeline = pipelineData;
+        
+        console.log(`Stored ${pipelineData.length} pipeline entries in Redis`);
+        res.status(200).json({ message: 'Pipeline data stored successfully' });
+    } catch (error) {
+        console.error('Error storing pipeline data:', error);
+        res.status(500).json({ message: 'Error storing pipeline data' });
+    }
+});
+
+// API endpoint for events data
+app.get('/api/events', async (req, res) => {
+    try {
+        client.keys('event:*', async (err, keys) => {
+            if (err) {
+                console.error('Error getting event keys:', err);
+                return res.status(500).json({ error: 'Failed to fetch events' });
+            }
+
+            const events = [];
+            for (const key of keys) {
+                try {
+                    const event = await getEventData(key);
+                    if (event) {
+                        events.push(event);
+                    }
+                } catch (error) {
+                    console.error(`Error fetching event ${key}:`, error);
+                }
+            }
+
+            res.json(events);
+        });
+    } catch (error) {
+        console.error('Error fetching events:', error);
+        res.status(500).json({ error: 'Failed to fetch events' });
+    }
+});
+
+// API endpoint for territories data
+app.get('/api/territories', async (req, res) => {
+    try {
+        console.log('Fetching territories data from Redis...');
+        
+        // Get all territory keys from Redis
+        const territoryKeys = await client.keys('territory:*');
+        let territories = [];
+        
+        // Retrieve each territory's data
+        for (const key of territoryKeys) {
+            const territoryData = await client.hGetAll(key);
+            if (Object.keys(territoryData).length > 0) {
+                territories.push(territoryData);
+            }
+        }
+        
+        // If no data in Redis, return empty array
+        if (territories.length === 0) {
+            console.log('No territories data found in Redis');
+            territories = [];
+        }
+        
+        console.log(`Retrieved ${territories.length} territories from Redis`);
+        res.json(territories);
+    } catch (error) {
+        console.error('Error fetching territories data:', error);
+        res.status(500).json({ message: 'Error fetching territories data' });
+    }
+});
+
+// API endpoint for partner data
+app.get('/api/partners', async (req, res) => {
+    try {
+        console.log('Fetching partners data from Redis...');
+        
+        const partnersData = {
+            historicalData: [],
+            currentDeals: []
+        };
+        
+        // Get historical data
+        const historicalKeys = await client.keys('partner:historical:*');
+        for (const key of historicalKeys) {
+            const data = await client.hGetAll(key);
+            if (Object.keys(data).length > 0) {
+                partnersData.historicalData.push({
+                    ...data,
+                    dealCount: parseInt(data.dealCount),
+                    revenue: parseFloat(data.revenue),
+                    sourcedLeads: parseInt(data.sourcedLeads)
+                });
+            }
+        }
+        
+        // Get current deals
+        const currentKeys = await client.keys('partner:current:*');
+        for (const key of currentKeys) {
+            const data = await client.hGetAll(key);
+            if (Object.keys(data).length > 0) {
+                partnersData.currentDeals.push({
+                    ...data,
+                    value: parseFloat(data.value),
+                    partnerSourced: data.partnerSourced === 'true'
+                });
+            }
+        }
+        
+        console.log(`Retrieved ${partnersData.historicalData.length} historical records and ${partnersData.currentDeals.length} current deals`);
+        res.json(partnersData);
+    } catch (error) {
+        console.error('Error fetching partners data:', error);
+        res.status(500).json({ message: 'Error fetching partners data' });
+    }
+});
+
+// Reset partners data
+app.post('/api/reset-partners', async (req, res) => {
+    try {
+        console.log('Storing partners data in Redis...');
+        
+        // Partner categories and their specific partners
+        const partnersByCategory = {
+            'Hyperscaler': ['AWS', 'Microsoft Azure', 'Google Cloud'],
+            'GSI': ['Accenture', 'Deloitte Digital', 'Capgemini', 'PwC Digital'],
+            'Local SI': [
+                'Computacenter AG', // DACH
+                'Bechtle AG', // DACH
+                'T-Systems', // DACH
+                'Swisscom', // DACH
+                'KPN ICT Consulting', // Benelux
+                'Cegeka', // Benelux
+                'Ordina' // Benelux
+            ]
+        };
+
+        // Enterprise companies by region
+        const companiesByRegion = {
+            'DACH': {
+                'Germany': [
+                    'Deutsche Bank AG',
+                    'SAP SE',
+                    'BMW Group',
+                    'Allianz SE',
+                    'Deutsche Telekom'
+                ],
+                'Austria': [
+                    'Erste Group Bank',
+                    'OMV AG',
+                    'Raiffeisen Bank',
+                    'Voestalpine AG'
+                ],
+                'Switzerland': [
+                    'UBS Group',
+                    'Nestlé SA',
+                    'Roche Holding',
+                    'Credit Suisse',
+                    'Swiss Re'
+                ]
+            },
+            'Benelux': {
+                'Netherlands': [
+                    'ING Group',
+                    'ASML Holding',
+                    'Philips NV',
+                    'Ahold Delhaize',
+                    'ABN AMRO'
+                ],
+                'Belgium': [
+                    'KBC Group',
+                    'Proximus',
+                    'Solvay SA',
+                    'UCB SA'
+                ],
+                'Luxembourg': [
+                    'ArcelorMittal',
+                    'SES SA',
+                    'Banque Internationale Luxembourg'
+                ]
+            }
+        };
+        
+        const partnersData = {
+            historicalData: [],
+            currentDeals: []
+        };
+        
+        // Delete existing partner data
+        const existingKeys = await client.keys('partner:*');
+        if (existingKeys.length > 0) {
+            await client.del(existingKeys);
+        }
+        
+        // Generate and store historical data
+        const currentYear = new Date().getFullYear();
+        const lastYear = currentYear - 1;
+        
+        // Generate historical data for each category
+        Object.keys(partnersByCategory).forEach(async (category, categoryIndex) => {
+            for (let q = 1; q <= 4; q++) {
+                const year = q < 3 ? currentYear : lastYear;
+                const quarter = q < 3 ? q : q + 2;
+                
+                // Base revenue by category with realistic enterprise values
+                const baseRevenue = category === 'Hyperscaler' ? 2500000 :
+                                  category === 'GSI' ? 1800000 : 1000000;
+                
+                // Add quarterly growth and variation
+                const quarterMultiplier = 1 + (q * 0.1); // 10% growth per quarter
+                const variation = (Math.random() * 0.2) - 0.1; // ±10% variation
+                const revenue = Math.floor(baseRevenue * quarterMultiplier * (1 + variation));
+                
+                const data = {
+                    category,
+                    year: year.toString(),
+                    quarter: `Q${quarter}`,
+                    dealCount: (category === 'Hyperscaler' ? 10 + Math.floor(Math.random() * 6) :
+                              category === 'GSI' ? 8 + Math.floor(Math.random() * 5) :
+                              6 + Math.floor(Math.random() * 4)).toString(),
+                    revenue: revenue.toString(),
+                    sourcedLeads: (category === 'Hyperscaler' ? 30 + Math.floor(Math.random() * 15) :
+                                 category === 'GSI' ? 25 + Math.floor(Math.random() * 12) :
+                                 20 + Math.floor(Math.random() * 10)).toString()
+                };
+                
+                // Store in Redis
+                const key = `partner:historical:${categoryIndex * 4 + q}`;
+                await client.hSet(key, data);
+                partnersData.historicalData.push({
+                    ...data,
+                    dealCount: parseInt(data.dealCount),
+                    revenue: parseFloat(data.revenue),
+                    sourcedLeads: parseInt(data.sourcedLeads)
+                });
+            }
+        });
+        
+        // Generate and store current deals
+        let dealIndex = 0;
+        Object.entries(companiesByRegion).forEach(([region, countries]) => {
+            Object.entries(countries).forEach(([country, companies]) => {
+                companies.forEach((company) => {
+                    // Select partner category and partner
+                    const category = Math.random() < 0.4 ? 'Hyperscaler' :
+                                   Math.random() < 0.7 ? 'GSI' : 'Local SI';
+                    const partners = partnersByCategory[category];
+                    const partnerName = partners[Math.floor(Math.random() * partners.length)];
+                    
+                    // Higher probability of partner sourcing for GSIs and Local SIs
+                    const partnerSourced = category === 'Hyperscaler' ? Math.random() < 0.3 :
+                                         category === 'GSI' ? Math.random() < 0.6 :
+                                         Math.random() < 0.8;
+                    
+                    // Generate enterprise-level deal values
+                    const baseValue = category === 'Hyperscaler' ? 1000000 :
+                                    category === 'GSI' ? 800000 : 600000;
+                    const valueMultiplier = partnerSourced ? 1.2 : 1.0;
+                    const value = Math.floor((baseValue + Math.random() * baseValue) * valueMultiplier);
+                    
+                    const stages = ['Technical Validation', 'Proposal', 'Negotiation', 'Closing'];
+                    const stage = stages[Math.floor(Math.random() * stages.length)];
+                    
+                    const data = {
+                        id: `deal-${dealIndex + 1}`,
+                        company,
+                        region: `${region} - ${country}`,
+                        partnerName,
+                        category,
+                        value: value.toString(),
+                        stage,
+                        partnerSourced: partnerSourced.toString()
+                    };
+                    
+                    // Store in Redis
+                    const key = `partner:current:${dealIndex}`;
+                    client.hSet(key, data);
+                    partnersData.currentDeals.push({
+                        ...data,
+                        value: parseFloat(data.value),
+                        partnerSourced
+                    });
+                    
+                    dealIndex++;
+                });
+            });
+        });
+        
+        // Update cache
+        dataCache.partners = partnersData;
+        
+        console.log(`Stored ${partnersData.historicalData.length} historical records and ${partnersData.currentDeals.length} current deals`);
+        res.status(200).json({ message: 'Partners data stored successfully' });
+    } catch (error) {
+        console.error('Error storing partners data:', error);
+        res.status(500).json({ message: 'Error storing partners data' });
+    }
+});
+
+// Reset territories data
+app.post('/api/reset-territories', async (req, res) => {
+    try {
+        console.log('Storing territory data in Redis...');
+        
+        const territories = [
+            {
+                name: 'DACH - Germany',
+                marketSize: '€25M',
+                penetration: '45%',
+                growthRate: '18%',
+                keyAccounts: '15',
+                salesRep: 'Michael Weber',
+                competitors: 'MongoDB, Couchbase, DataStax'
+            },
+            {
+                name: 'DACH - Austria',
+                marketSize: '€12M',
+                penetration: '38%',
+                growthRate: '22%',
+                keyAccounts: '8',
+                salesRep: 'Anna Schmidt',
+                competitors: 'MongoDB, Couchbase'
+            },
+            {
+                name: 'DACH - Switzerland',
+                marketSize: '€18M',
+                penetration: '42%',
+                growthRate: '20%',
+                keyAccounts: '12',
+                salesRep: 'Thomas Müller',
+                competitors: 'MongoDB, DataStax, Aerospike'
+            },
+            {
+                name: 'Benelux - Netherlands',
+                marketSize: '€20M',
+                penetration: '40%',
+                growthRate: '19%',
+                keyAccounts: '10',
+                salesRep: 'Jan van der Berg',
+                competitors: 'MongoDB, Couchbase, MemSQL'
+            },
+            {
+                name: 'Benelux - Belgium',
+                marketSize: '€15M',
+                penetration: '35%',
+                growthRate: '21%',
+                keyAccounts: '7',
+                salesRep: 'Sophie Dubois',
+                competitors: 'MongoDB, DataStax'
+            },
+            {
+                name: 'Benelux - Luxembourg',
+                marketSize: '€8M',
+                penetration: '30%',
+                growthRate: '25%',
+                keyAccounts: '5',
+                salesRep: 'Marc Hoffmann',
+                competitors: 'MongoDB, Couchbase'
+            }
+        ];
+        
+        // Delete existing territory data
+        const existingKeys = await client.keys('territory:*');
+        if (existingKeys.length > 0) {
+            await client.del(existingKeys);
+        }
+        
+        // Store each territory in Redis
+        for (let i = 0; i < territories.length; i++) {
+            const territory = territories[i];
+            await client.hSet(`territory:${i}`, territory);
+        }
+        
+        // Update cache
+        dataCache.territories = territories;
+        
+        console.log(`Stored ${territories.length} territories in Redis`);
+        res.status(200).json({ message: 'Territory data stored successfully' });
+    } catch (error) {
+        console.error('Error storing territory data:', error);
+        res.status(500).json({ message: 'Error storing territory data' });
+    }
+});
+
+// Reset events data
+app.post('/api/reset-events', async (req, res) => {
+    try {
+        console.log('Storing events data in Redis...');
+        
+        // Delete existing events
+        client.keys('event:*', async (err, existingKeys) => {
+            if (err) {
+                console.error('Error getting event keys:', err);
+                return res.status(500).json({ error: 'Failed to reset events' });
+            }
+
+            if (existingKeys.length > 0) {
+                client.del(existingKeys, async (err) => {
+                    if (err) {
+                        console.error('Error deleting existing events:', err);
+                        return res.status(500).json({ error: 'Failed to delete existing events' });
+                    }
+
+                    try {
+                        // Generate and store new events
+                        const events = generateEvents();
+                        for (let i = 0; i < events.length; i++) {
+                            await storeEventData(`event:${i}`, events[i]);
+                        }
+
+                        res.json({ message: 'Events data stored successfully' });
+                    } catch (error) {
+                        console.error('Error storing events:', error);
+                        res.status(500).json({ error: 'Failed to store events' });
+                    }
+                });
+            } else {
+                // No existing events to delete, just store new ones
+                try {
+                    const events = generateEvents();
+                    for (let i = 0; i < events.length; i++) {
+                        await storeEventData(`event:${i}`, events[i]);
+                    }
+
+                    res.json({ message: 'Events data stored successfully' });
+                } catch (error) {
+                    console.error('Error storing events:', error);
+                    res.status(500).json({ error: 'Failed to store events' });
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error resetting events:', error);
+        res.status(500).json({ error: 'Failed to reset events' });
+    }
+});
+
+// Reset MEDDPICC data
+app.post('/api/reset-meddpicc', async (req, res) => {
+    try {
+        console.log('Storing MEDDPICC data in Redis...');
+        
+        const companies = [
+            // DACH Region Companies
+            'Deutsche Telekom AG',
+            'Volkswagen Group',
+            'Siemens AG',
+            'Swiss Re',
+            'Erste Group Bank',
+            'Nestlé SA',
+            // Benelux Region Companies
+            'ING Group',
+            'Philips NV',
+            'KBC Group',
+            'ASML Holding',
+            'Ahold Delhaize',
+            'ArcelorMittal'
+        ];
+
+        const regions = {
+            'Deutsche Telekom AG': 'DACH - Germany',
+            'Volkswagen Group': 'DACH - Germany',
+            'Siemens AG': 'DACH - Germany',
+            'Swiss Re': 'DACH - Switzerland',
+            'Erste Group Bank': 'DACH - Austria',
+            'Nestlé SA': 'DACH - Switzerland',
+            'ING Group': 'Benelux - Netherlands',
+            'Philips NV': 'Benelux - Netherlands',
+            'KBC Group': 'Benelux - Belgium',
+            'ASML Holding': 'Benelux - Netherlands',
+            'Ahold Delhaize': 'Benelux - Netherlands',
+            'ArcelorMittal': 'Benelux - Luxembourg'
+        };
+
+        const useCases = {
+            'Deutsche Telekom AG': 'Real-time Customer Data Platform',
+            'Volkswagen Group': 'IoT Data Processing',
+            'Siemens AG': 'Industrial IoT Analytics',
+            'Swiss Re': 'Real-time Risk Assessment',
+            'Erste Group Bank': 'Fraud Detection System',
+            'Nestlé SA': 'Supply Chain Optimization',
+            'ING Group': 'Real-time Banking Analytics',
+            'Philips NV': 'Healthcare Data Platform',
+            'KBC Group': 'Financial Services Cache',
+            'ASML Holding': 'Manufacturing Analytics',
+            'Ahold Delhaize': 'Retail Analytics Platform',
+            'ArcelorMittal': 'Industrial Process Optimization'
+        };
+
+        const stages = ['Prospecting', 'Qualification', 'Proposal', 'Negotiation', 'Closed Won'];
+        const meddpiccData = [];
+        
+        // Delete existing MEDDPICC data
+        const existingKeys = await client.keys('meddpicc:*');
+        if (existingKeys.length > 0) {
+            await client.del(existingKeys);
+        }
+        
+        // Generate and store new MEDDPICC data
+        for (let i = 0; i < companies.length; i++) {
+            const company = companies[i];
+            
+            // Generate MEDDPICC scores (1-5 scale)
+            const Metrics = Math.floor(3 + Math.random() * 3); // 3-5
+            const Economic_Buyer = Math.floor(2 + Math.random() * 4); // 2-5
+            const Decision_Criteria = Math.floor(2 + Math.random() * 4); // 2-5
+            const Decision_Process = Math.floor(2 + Math.random() * 4); // 2-5
+            const Paper_Process = Math.floor(2 + Math.random() * 4); // 2-5
+            const Identify_Pain = Math.floor(3 + Math.random() * 3); // 3-5
+            const Champion = Math.floor(2 + Math.random() * 4); // 2-5
+            const Competition = Math.floor(2 + Math.random() * 4); // 2-5
+            
+            // Calculate probability based on MEDDPICC scores
+            const probability = Math.floor(
+                ((Metrics + Economic_Buyer + Decision_Criteria + Decision_Process + 
+                  Paper_Process + Identify_Pain + Champion + Competition) / 40) * 100
+            );
+            
+            // Generate enterprise-level deal values (500K to 5M)
+            const value = Math.floor(500000 + Math.random() * 4500000);
+            
+            // Generate expected close date within next 6 months
+            const expectedCloseDate = new Date();
+            expectedCloseDate.setDate(expectedCloseDate.getDate() + Math.floor(Math.random() * 180));
+            
+            // Assign stage based on probability
+            const stage = stages[Math.min(Math.floor(probability / 25), stages.length - 1)];
+            
+            const data = {
+                id: `opp-${i + 1}`,
+                company,
+                region: regions[company],
+                useCase: useCases[company],
+                value: value.toString(),
+                stage,
+                probability: probability.toString(),
+                expectedCloseDate: expectedCloseDate.toISOString(),
+                Metrics: Metrics.toString(),
+                Metrics_notes: `Quantified business impact for ${useCases[company]} implementation with expected ROI analysis`,
+                Economic_Buyer: Economic_Buyer.toString(),
+                Economic_Buyer_notes: `Engaged with CTO and Chief Digital Officer for ${useCases[company]} initiative`,
+                Decision_Criteria: Decision_Criteria.toString(),
+                Decision_Criteria_notes: `Clear technical and business requirements defined for ${useCases[company]}`,
+                Decision_Process: Decision_Process.toString(),
+                Decision_Process_notes: `Mapped approval chain through IT, Security, and Finance departments`,
+                Paper_Process: Paper_Process.toString(),
+                Paper_Process_notes: 'Enterprise procurement process and legal requirements documented',
+                Identify_Pain: Identify_Pain.toString(),
+                Identify_Pain_notes: `Current solution limitations and scalability challenges identified for ${useCases[company]}`,
+                Champion: Champion.toString(),
+                Champion_notes: 'Strong technical champion in Enterprise Architecture team',
+                Competition: Competition.toString(),
+                Competition_notes: 'Competitive analysis against traditional solutions completed'
+            };
+            
+            // Store in Redis
+            await client.hSet(`meddpicc:${i}`, data);
+            meddpiccData.push(data);
+        }
+        
+        // Update cache
+        dataCache.meddpicc = meddpiccData;
+        
+        console.log(`Stored ${meddpiccData.length} MEDDPICC entries in Redis`);
+        res.status(200).json({ message: 'MEDDPICC data stored successfully' });
+    } catch (error) {
+        console.error('Error storing MEDDPICC data:', error);
+        res.status(500).json({ message: 'Error storing MEDDPICC data' });
+    }
+});
+
+// API endpoint for MEDDPICC data
+app.get('/api/meddpicc', async (req, res) => {
+    try {
+        console.log('Fetching MEDDPICC data from Redis...');
+        
+        // Get all MEDDPICC keys from Redis
+        const meddpiccKeys = await client.keys('meddpicc:*');
+        let meddpiccData = [];
+        
+        // Retrieve each MEDDPICC entry's data
+        for (const key of meddpiccKeys) {
+            const data = await client.hGetAll(key);
+            if (Object.keys(data).length > 0) {
+                // Convert numeric fields back to numbers
+                meddpiccData.push({
+                    ...data,
+                    value: parseFloat(data.value),
+                    probability: parseInt(data.probability),
+                    Metrics: parseInt(data.Metrics),
+                    Economic_Buyer: parseInt(data.Economic_Buyer),
+                    Decision_Criteria: parseInt(data.Decision_Criteria),
+                    Decision_Process: parseInt(data.Decision_Process),
+                    Paper_Process: parseInt(data.Paper_Process),
+                    Identify_Pain: parseInt(data.Identify_Pain),
+                    Champion: parseInt(data.Champion),
+                    Competition: parseInt(data.Competition)
+                });
+            }
+        }
+        
+        // If no data in Redis, return empty array
+        if (meddpiccData.length === 0) {
+            console.log('No MEDDPICC data found in Redis');
+            meddpiccData = [];
+        }
+        
+        console.log(`Retrieved ${meddpiccData.length} MEDDPICC entries from Redis`);
+        res.json(meddpiccData);
+    } catch (error) {
+        console.error('Error fetching MEDDPICC data:', error);
+        res.status(500).json({ message: 'Error fetching MEDDPICC data' });
+    }
+});
+
+// API endpoint for forecasting data
+app.get('/api/forecasting', async (req, res) => {
+    try {
+        // Try to get data from Redis first
+        const currentDate = new Date();
+        const currentYear = currentDate.getFullYear();
+        const currentMonth = currentDate.getMonth();
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        let salesData = [];
+        
+        // Get last 24 months of data from Redis
+        for (let i = 23; i >= 0; i--) {
+            const date = new Date(currentYear, currentMonth - i, 1);
+            const year = date.getFullYear();
+            const month = months[date.getMonth()];
+            const key = `sales:${year}:${month}`;
+            
+            const monthData = await client.hGetAll(key);
+            if (Object.keys(monthData).length > 0) {
+                salesData.push({
+                    ...monthData,
+                    year: parseInt(monthData.year),
+                    revenue: parseFloat(monthData.revenue),
+                    deals: parseInt(monthData.deals),
+                    avgDealSize: parseFloat(monthData.avgDealSize),
+                    leadGeneration: parseInt(monthData.leadGeneration),
+                    conversionRate: parseFloat(monthData.conversionRate)
+                });
+            }
+        }
+        
+        // If no data in Redis, generate and store it
+        if (salesData.length === 0) {
+            console.log('No sales data found in Redis, generating new data...');
+            salesData = await generateSampleSalesData();
+        }
+        
+        // Sort data chronologically
+        salesData.sort((a, b) => {
+            if (a.year !== b.year) return a.year - b.year;
+            return months.indexOf(a.month) - months.indexOf(b.month);
+        });
+        
+        res.json(salesData);
+    } catch (error) {
+        console.error('Error fetching forecasting data:', error);
+        res.status(500).json({ message: 'Error fetching forecasting data' });
+    }
+});
+
+// Add a route to update events with leads data
+app.post('/api/update-events-leads', async (req, res) => {
+    try {
+        console.log('Updating events with leads data');
+        
+        if (client.isOpen) {
+            // Get all event keys
+            const eventKeys = await client.keys('event:*');
+            
+            if (eventKeys && eventKeys.length > 0) {
+                // Process each event
+                for (const key of eventKeys) {
+                    const event = await client.hGetAll(key);
+                    
+                    // Only update completed events
+                    if (event.status === 'Completed') {
+                        let leadsGenerated = 0;
+                        
+                        // Generate leads based on event type
+                        switch(event.type) {
+                            case 'Conference':
+                                leadsGenerated = Math.floor(Math.random() * 30 + 20); // 20-50 leads
+                                break;
+                            case 'Webinar':
+                                leadsGenerated = Math.floor(Math.random() * 15 + 10); // 10-25 leads
+                                break;
+                            case 'Customer Meeting':
+                                leadsGenerated = Math.floor(Math.random() * 3 + 1); // 1-3 leads
+                                break;
+                            case 'Partner Event':
+                                leadsGenerated = Math.floor(Math.random() * 20 + 15); // 15-35 leads
+                                break;
+                            case 'Workshop':
+                                leadsGenerated = Math.floor(Math.random() * 10 + 5); // 5-15 leads
+                                break;
+                            case 'Training':
+                                leadsGenerated = Math.floor(Math.random() * 8 + 3); // 3-10 leads
+                                break;
+                            default:
+                                leadsGenerated = Math.floor(Math.random() * 5 + 1); // 1-5 leads
+                        }
+                        
+                        // Update the event with leads generated
+                        await client.hSet(key, 'leadsGenerated', leadsGenerated.toString());
+                        console.log(`Updated ${key} with ${leadsGenerated} leads`);
+                    }
+                }
+                
+                // Refresh the cache
+                await refreshCache();
+                
+                res.status(200).json({ message: 'Events updated with leads data successfully' });
+            } else {
+                res.status(404).json({ message: 'No events found' });
+            }
+        } else {
+            res.status(500).json({ message: 'Redis client not connected' });
+        }
+    } catch (error) {
+        console.error('Error updating events with leads data:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Add a route to update partner data
+app.post('/api/partners', async (req, res) => {
+    try {
+        console.log('Updating partner data...');
+        
+        // Get the partner data from the request body
+        const partnerData = req.body;
+        
+        // Validate the data structure
+        if (!partnerData || !partnerData.historicalData || !partnerData.currentDeals) {
+            return res.status(400).json({ message: 'Invalid partner data structure' });
+        }
+        
+        // Save to Redis
+        await client.set('partners', JSON.stringify(partnerData));
+        
+        console.log('Partner data updated successfully');
+        
+        // Refresh the cache
+        await refreshCache();
+        
+        res.status(200).json({ message: 'Partner data updated successfully' });
+    } catch (error) {
+        console.error('Error updating partner data:', error);
+        res.status(500).json({ message: 'Error updating partner data' });
+    }
+});
+
+// Function to generate sample sales data
+async function generateSampleSalesData() {
+    const salesData = [];
+    const currentDate = new Date();
+    const currentYear = currentDate.getFullYear();
+    const currentMonth = currentDate.getMonth();
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    
+    // Generate historical data for the last 24 months (2 years of historical data)
+    for (let i = 23; i >= 0; i--) {  // Start from oldest to newest
+        const date = new Date(currentYear, currentMonth - i, 1);
+        const year = date.getFullYear();
+        const monthIndex = date.getMonth();
+        const month = months[monthIndex];
+        
+        // Generate realistic revenue that shows consistent growth
+        // Start from 1.5M and grow to 4M over 24 months with some variation
+        const progress = (24 - i) / 24;  // 0 to 1 as we move forward in time
+        const baseRevenue = 1.5 + (progress * 2.5);  // Grows from 1.5M to 4M
+        const variation = (Math.random() * 0.3) - 0.1;  // Random variation of -0.1M to +0.2M
+        const revenue = Math.max(baseRevenue + variation, baseRevenue * 0.95);  // Ensure we don't drop too much
+        
+        // Calculate quarter (0-3)
+        const quarter = Math.floor(monthIndex / 3);
+        
+        // Generate more deals and better conversion rates as time progresses
+        const baseDeals = 10 + Math.floor(progress * 15);  // Deals grow from 10 to 25
+        const deals = baseDeals + Math.floor(Math.random() * 5);
+        
+        // Conversion rate improves over time (10% to 25%)
+        const baseConversion = 10 + (progress * 15);
+        const conversionRate = baseConversion + (Math.random() * 5);
+        
+        const monthData = {
+            year: year.toString(),
+            month,
+            quarter: `Q${quarter + 1}`,
+            revenue: revenue.toFixed(2),
+            deals: deals.toString(),
+            avgDealSize: ((revenue * 1000000) / deals).toFixed(2),
+            leadGeneration: Math.floor(80 + (progress * 40) + (Math.random() * 20)).toString(),  // Leads grow from 80 to 120
+            conversionRate: conversionRate.toFixed(2),
+            isHistorical: 'true'  // Mark as historical data
+        };
+        
+        // Store in Redis
+        const key = `sales:${year}:${month}`;
+        await client.hSet(key, monthData);
+        
+        salesData.push({
+            ...monthData,
+            year: parseInt(monthData.year),
+            revenue: parseFloat(monthData.revenue),
+            deals: parseInt(monthData.deals),
+            avgDealSize: parseFloat(monthData.avgDealSize),
+            leadGeneration: parseInt(monthData.leadGeneration),
+            conversionRate: parseFloat(monthData.conversionRate),
+            isHistorical: true
+        });
+    }
+    
+    // Generate forecast data for the next months until September 2025
+    // Use the average of the last 3 months as the baseline for forecasting
+    const lastThreeMonths = salesData.slice(-3);
+    const avgRevenue = lastThreeMonths.reduce((sum, month) => sum + parseFloat(month.revenue), 0) / 3;
+    const avgDeals = Math.round(lastThreeMonths.reduce((sum, month) => sum + parseInt(month.deals), 0) / 3);
+    const avgLeadGen = Math.round(lastThreeMonths.reduce((sum, month) => sum + parseInt(month.leadGeneration), 0) / 3);
+    const avgConversion = lastThreeMonths.reduce((sum, month) => sum + parseFloat(month.conversionRate), 0) / 3;
+
+    // Calculate months until September 2025
+    const targetYear = 2025;
+    const targetMonth = 8; // September (0-based)
+    let monthsToForecast = ((targetYear - currentYear) * 12 + (targetMonth - currentMonth));
+    if (monthsToForecast < 0) {
+        // If we're already past September 2025, adjust the calculation
+        monthsToForecast = 0;
+    } else {
+        // Add 1 to include the target month
+        monthsToForecast += 1;
+    }
+
+    console.log('Generating forecast for', monthsToForecast, 'months from', months[currentMonth], currentYear, 'to Sep 2025');
+
+    // Mark the current month as the last historical month
+    const lastHistoricalDate = new Date(currentYear, currentMonth, 1);
+
+    for (let i = 1; i <= monthsToForecast; i++) {
+        const date = new Date(currentYear, currentMonth + i, 1);
+        const year = date.getFullYear();
+        const monthIndex = date.getMonth();
+        const month = months[monthIndex];
+        const quarter = Math.floor(monthIndex / 3);
+        
+        // Add small random variations to the forecast with slight upward trend
+        const monthProgress = i / monthsToForecast; // 0 to 1 as we progress
+        const trendIncrease = 1 + (monthProgress * 0.2); // Up to 20% increase by the end
+        const variation = (Math.random() * 0.1) - 0.05;  // ±5% variation
+        const revenue = avgRevenue * (trendIncrease + variation);
+        
+        // Check if this month is historical or forecast
+        const isHistorical = date <= lastHistoricalDate;
+        
+        const monthData = {
+            year: year.toString(),
+            month,
+            quarter: `Q${quarter + 1}`,
+            revenue: revenue.toFixed(2),
+            deals: (avgDeals + Math.floor(Math.random() * 5) - 2).toString(),  // ±2 deals variation
+            avgDealSize: ((revenue * 1000000) / avgDeals).toFixed(2),
+            leadGeneration: (avgLeadGen + Math.floor(Math.random() * 10) - 5).toString(),  // ±5 leads variation
+            conversionRate: (avgConversion + (Math.random() * 2) - 1).toFixed(2),  // ±1% variation
+            isHistorical: isHistorical.toString()  // Mark as historical or forecast data
+        };
+        
+        console.log('Generated data for:', month, year, 'Revenue:', revenue.toFixed(2), 'Historical:', isHistorical);
+        
+        // Store in Redis
+        const key = `sales:${year}:${month}`;
+        await client.hSet(key, monthData);
+        
+        salesData.push({
+            ...monthData,
+            year: parseInt(monthData.year),
+            revenue: parseFloat(monthData.revenue),
+            deals: parseInt(monthData.deals),
+            avgDealSize: parseFloat(monthData.avgDealSize),
+            leadGeneration: parseInt(monthData.leadGeneration),
+            conversionRate: parseFloat(monthData.conversionRate),
+            isHistorical: isHistorical
+        });
+    }
+    
+    // Sort data chronologically
+    salesData.sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year;
+        return months.indexOf(a.month) - months.indexOf(b.month);
+    });
+    
+    // Mark that we have sales data
+    await client.set('sales:data', 'true');
+    
+    return salesData;
+}
+
+// Start server
+connectRedis().then(async () => {
+    // Initial cache refresh
+    await refreshCache();
+    
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
+}); 

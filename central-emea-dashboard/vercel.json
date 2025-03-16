@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "central-emea-dashboard/backend/server.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "central-emea-dashboard/frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist",
+        "buildCommand": "npm run vercel-build"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "central-emea-dashboard/backend/server.js"
+    },
+    {
+      "src": "/(.*\\.(js|css|png|jpg|svg|ico))",
+      "dest": "central-emea-dashboard/frontend/dist/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "central-emea-dashboard/frontend/dist/index.html"
+    }
+  ],
+  "env": {
+    "REDIS_HOST": "redis-16999.c74.us-east-1-4.ec2.redns.redis-cloud.com",
+    "REDIS_PORT": "16999",
+    "REDIS_USERNAME": "default",
+    "REDIS_PASSWORD": "ITGzDD2Txw2vUatIMjXispHBbN1cU91z",
+    "JWT_SECRET": "central-emea-dashboard-secret",
+    "NODE_ENV": "production",
+    "FRONTEND_URL": "https://redis-central-emea-dashboard.vercel.app"
+  }
+} 

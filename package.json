@@ -1,0 +1,15 @@
+{
+  "name": "redis-central-emea-dashboard",
+  "version": "1.0.0",
+  "description": "Central EMEA Go-to-Market Dashboard powered by Redis Cloud",
+  "main": "index.js",
+  "scripts": {
+    "build": "cd central-emea-dashboard/frontend && npm run build",
+    "start": "cd central-emea-dashboard/backend && node server.js"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "Thomas Gregg",
+  "license": "MIT"
+} 
