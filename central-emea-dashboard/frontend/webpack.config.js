@@ -6,7 +6,7 @@ module.exports = {
   entry: './src/index.js',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'bundle.js',
+    filename: 'bundle.[contenthash].js',
     publicPath: '/'
   },
   module: {
@@ -32,21 +32,18 @@ module.exports = {
   },
   plugins: [
     new HtmlWebpackPlugin({
-      template: './src/index.html',
+      template: './public/index.html',
       filename: 'index.html'
     }),
     new webpack.DefinePlugin({
-      'process.env.REACT_APP_API_URL': JSON.stringify(process.env.REACT_APP_API_URL || '/api')
+      'process.env.API_URL': JSON.stringify(process.env.API_URL || '/api')
     })
   ],
   devServer: {
     historyApiFallback: true,
     port: 3000,
-    proxy: [
-      {
-        context: ['/api'],
-        target: process.env.API_URL || 'http://localhost:5001'
-      }
-    ]
+    proxy: {
+      '/api': 'http://localhost:5001'
+    }
   }
 }; 

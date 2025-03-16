@@ -4,9 +4,9 @@
   "description": "Central EMEA Go-to-Market Dashboard powered by Redis Cloud",
   "main": "index.js",
   "scripts": {
-    "build": "cd central-emea-dashboard/frontend && npm install --no-fund --verbose && npm install -D webpack-cli --no-fund --verbose && npm run build --verbose",
+    "build": "cd central-emea-dashboard/frontend && npm install --no-fund && NODE_ENV=production ./node_modules/.bin/webpack --mode production",
     "start": "cd central-emea-dashboard/backend && node server.js",
-    "vercel-build": "cd central-emea-dashboard/frontend && npm install && npm run build"
+    "vercel-build": "cd central-emea-dashboard/frontend && npm install && NODE_ENV=production ./node_modules/.bin/webpack --mode production"
   },
   "engines": {
     "node": ">=16.0.0"
