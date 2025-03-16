@@ -32,10 +32,27 @@ try {
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@mui/material@5.12.1/umd/material-ui.production.min.js"></script>
+  <!-- Immediate redirect if page doesn't load -->
+  <script>
+    // Redirect to login page immediately
+    window.location.href = '/login';
+  </script>
 </head>
 <body>
-  <div id="root"></div>
-  <script src="/bundle.js"></script>
+  <div id="root">
+    <div style="text-align: center; padding: 20px;">
+      <h1>Central EMEA Dashboard</h1>
+      <p>Redirecting to login page...</p>
+      <p>If you are not redirected, <a href="/login">click here</a>.</p>
+    </div>
+  </div>
+  <noscript>
+    <div style="text-align: center; padding: 20px;">
+      <h1>Central EMEA Dashboard</h1>
+      <p>JavaScript is required to use this application.</p>
+      <a href="/login">Go to Login</a>
+    </div>
+  </noscript>
 </body>
 </html>`;
 
@@ -49,6 +66,7 @@ body {
   margin: 0;
   padding: 0;
   font-family: 'Roboto', sans-serif;
+  background-color: #f5f5f5;
 }
 
 #root {
@@ -76,7 +94,7 @@ body {
     // Create a simple bundle.js file as fallback
     const fallbackBundle = `
 // Fallback bundle.js
-console.log('Loading Central EMEA Dashboard...');
+console.log('Loading Central EMEA Dashboard fallback...');
 
 // Create a simple React app
 const root = document.getElementById('root');
@@ -84,6 +102,7 @@ root.innerHTML = '<div style="padding: 20px; text-align: center;"><h1>Central EM
 
 // Redirect to login page after a delay
 setTimeout(() => {
+  console.log('Redirecting to login page');
   window.location.href = '/login';
 }, 1000);
 `;
@@ -140,10 +159,20 @@ setTimeout(() => {
       text-align: center;
       color: #db3c3c;
     }
+    .logo {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .logo img {
+      max-width: 150px;
+    }
   </style>
 </head>
 <body>
   <div class="login-container">
+    <div class="logo">
+      <img src="https://redis.com/wp-content/themes/wpx/assets/images/logo-redis.svg" alt="Redis Logo">
+    </div>
     <h1>Central EMEA Dashboard</h1>
     <form id="login-form">
       <div class="form-group">
@@ -252,14 +281,58 @@ setTimeout(() => {
 
   // Create a vercel.json file in the dist directory
   const vercelConfig = {
-    "rewrites": [
-      { "source": "/api/(.*)", "destination": "/api/$1" },
-      { "source": "/(.*)", "destination": "/index.html" }
-    ]
+    "version": 2,
+    "routes": [
+      { "src": "/api/(.*)", "dest": "/api/$1" },
+      { "src": "/login", "dest": "/login/index.html" },
+      { "src": "/dashboard", "dest": "/dashboard/index.html" },
+      { "src": "/(.*)", "dest": "/index.html" }
+    ],
+    "cleanUrls": true
   };
   
   fs.writeFileSync(path.join(distDir, 'vercel.json'), JSON.stringify(vercelConfig, null, 2));
   console.log('Created vercel.json for client-side routing');
+
+  // Create a direct index.html in the login directory that doesn't rely on routing
+  fs.writeFileSync(path.join(distDir, 'index.login.html'), fs.readFileSync(path.join(loginDir, 'index.html')));
+  console.log('Created direct access login page');
+
+  // Create a direct redirect index.html as a fallback
+  const redirectHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Central EMEA Dashboard</title>
+  <meta http-equiv="refresh" content="0;url=/login">
+  <style>
+    body {
+      font-family: 'Roboto', sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background-color: #f5f5f5;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>Central EMEA Dashboard</h1>
+    <p>Redirecting to login page...</p>
+    <p>If you are not redirected, <a href="/login">click here</a>.</p>
+  </div>
+  <script>
+    window.location.href = '/login';
+  </script>
+</body>
+</html>`;
+
+  fs.writeFileSync(path.join(distDir, 'index.redirect.html'), redirectHtml);
+  console.log('Created redirect index.html');
 
   console.log('Build completed successfully!');
   process.exit(0);
