@@ -1697,3 +1697,16 @@ app.get('/api/reset-bdr-campaigns', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error resetting BDR campaigns data' });
     }
 });
+
+// For Vercel serverless functions
+if (process.env.VERCEL) {
+  // Export the Express app for serverless use
+  module.exports = app;
+} else {
+  // Start the server for local development
+  const PORT = process.env.PORT || 5001;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Redis connected at ${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`);
+  });
+}
