@@ -7,6 +7,18 @@ import jwt from 'jsonwebtoken';
 // Create Express app
 const app = express();
 
+// Debug logging
+console.log('API server starting...');
+console.log('Environment variables:', {
+  REDIS_HOST: process.env.REDIS_HOST,
+  REDIS_PORT: process.env.REDIS_PORT,
+  REDIS_USERNAME: process.env.REDIS_USERNAME,
+  REDIS_PASSWORD: process.env.REDIS_PASSWORD ? '***' : 'not set',
+  JWT_SECRET: process.env.JWT_SECRET ? '***' : 'not set',
+  NODE_ENV: process.env.NODE_ENV,
+  VERCEL: process.env.VERCEL
+});
+
 // Configure middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL || '*',
@@ -16,19 +28,80 @@ app.use(cors({
 app.use(express.json());
 
 // Redis connection
-const redisClient = createClient({
-  url: `redis://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`
-});
+console.log('Setting up Redis client...');
+let redisClient;
+try {
+  redisClient = createClient({
+    url: `redis://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
+    socket: {
+      connectTimeout: 10000, // 10 seconds
+      reconnectStrategy: (retries) => {
+        console.log(`Redis reconnect attempt ${retries}`);
+        if (retries > 5) {
+          console.log('Maximum Redis reconnection attempts reached');
+          return new Error('Maximum Redis reconnection attempts reached');
+        }
+        return Math.min(retries * 1000, 5000);
+      }
+    }
+  });
+  console.log('Redis client created successfully');
+  
+  // Add event listeners for Redis client
+  redisClient.on('error', (err) => {
+    console.error('Redis client error:', err);
+  });
+  
+  redisClient.on('connect', () => {
+    console.log('Redis client connecting...');
+  });
+  
+  redisClient.on('ready', () => {
+    console.log('Redis client ready');
+  });
+  
+  redisClient.on('end', () => {
+    console.log('Redis connection ended');
+  });
+  
+  redisClient.on('reconnecting', () => {
+    console.log('Redis client reconnecting...');
+  });
+} catch (error) {
+  console.error('Error creating Redis client:', error);
+}
 
-// Connect to Redis
+// Connect to Redis with timeout protection
 (async () => {
   try {
-    await redisClient.connect();
-    console.log('Connected to Redis');
+    console.log('Attempting to connect to Redis...');
+    
+    // Create a promise that rejects after timeout
+    const connectWithTimeout = Promise.race([
+      redisClient.connect(),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Redis connection timeout after 15 seconds')), 15000)
+      )
+    ]);
+    
+    await connectWithTimeout;
+    console.log('Connected to Redis successfully');
   } catch (err) {
     console.error('Redis connection error:', err);
+    // Continue without Redis in serverless environment
+    console.log('Will continue without Redis connection and use fallback data');
   }
 })();
+
+// Add a simple root route for debugging
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'API server is running',
+    timestamp: new Date().toISOString(),
+    redis: redisClient?.isReady ? 'connected' : 'disconnected'
+  });
+});
 
 // Middleware to verify JWT token
 const verifyToken = (req, res, next) => {
@@ -53,12 +126,32 @@ const verifyToken = (req, res, next) => {
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
-    const isConnected = redisClient.isReady;
+    const isConnected = redisClient?.isReady || false;
+    let pingResult = null;
+    
+    if (isConnected) {
+      try {
+        pingResult = await Promise.race([
+          redisClient.ping(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Ping timeout')), 5000))
+        ]);
+      } catch (error) {
+        console.error('Redis ping error:', error);
+      }
+    }
+    
     res.json({
       status: 'ok',
-      redis: isConnected ? 'connected' : 'disconnected'
+      redis: isConnected && pingResult === 'PONG' ? 'connected' : 'disconnected',
+      details: {
+        serverRunning: true,
+        redisConnected: isConnected,
+        pingSuccess: pingResult === 'PONG',
+        timestamp: new Date().toISOString()
+      }
     });
   } catch (error) {
+    console.error('Health check error:', error);
     res.status(500).json({ error: 'Health check failed', details: error.message });
   }
 });
@@ -79,21 +172,45 @@ app.post('/api/login', async (req, res) => {
 // Get events endpoint
 app.get('/api/events', verifyToken, async (req, res) => {
   try {
-    // Check if events data exists in Redis
-    const eventsData = await redisClient.get('events');
+    console.log('Fetching events data...');
+    let eventsData = null;
     
-    if (eventsData) {
-      return res.json(JSON.parse(eventsData));
+    // Try to get data from Redis if connected
+    if (redisClient?.isReady) {
+      try {
+        const redisData = await Promise.race([
+          redisClient.get('events'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis get timeout')), 5000))
+        ]);
+        
+        if (redisData) {
+          console.log('Retrieved events data from Redis');
+          eventsData = JSON.parse(redisData);
+        }
+      } catch (error) {
+        console.error('Error fetching from Redis:', error);
+      }
     }
     
-    // Generate sample data if none exists
-    const sampleEvents = generateEventsData();
+    // Generate sample data if none exists or Redis is not connected
+    if (!eventsData) {
+      console.log('Generating sample events data');
+      eventsData = generateEventsData();
+      
+      // Try to store in Redis if connected
+      if (redisClient?.isReady) {
+        try {
+          await redisClient.set('events', JSON.stringify(eventsData));
+          console.log('Stored events data in Redis');
+        } catch (error) {
+          console.error('Error storing in Redis:', error);
+        }
+      }
+    }
     
-    // Store in Redis
-    await redisClient.set('events', JSON.stringify(sampleEvents));
-    
-    res.json(sampleEvents);
+    res.json(eventsData);
   } catch (error) {
+    console.error('Failed to fetch events:', error);
     res.status(500).json({ error: 'Failed to fetch events', details: error.message });
   }
 });
@@ -101,21 +218,45 @@ app.get('/api/events', verifyToken, async (req, res) => {
 // Get BDR campaigns endpoint
 app.get('/api/bdr-campaigns', verifyToken, async (req, res) => {
   try {
-    // Check if BDR campaigns data exists in Redis
-    const bdrData = await redisClient.get('bdr-campaigns');
+    console.log('Fetching BDR campaigns data...');
+    let bdrData = null;
     
-    if (bdrData) {
-      return res.json(JSON.parse(bdrData));
+    // Try to get data from Redis if connected
+    if (redisClient?.isReady) {
+      try {
+        const redisData = await Promise.race([
+          redisClient.get('bdr-campaigns'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis get timeout')), 5000))
+        ]);
+        
+        if (redisData) {
+          console.log('Retrieved BDR campaigns data from Redis');
+          bdrData = JSON.parse(redisData);
+        }
+      } catch (error) {
+        console.error('Error fetching BDR campaigns from Redis:', error);
+      }
     }
     
-    // Generate sample data if none exists
-    const sampleBdrCampaigns = generateBdrCampaignsData();
+    // Generate sample data if none exists or Redis is not connected
+    if (!bdrData) {
+      console.log('Generating sample BDR campaigns data');
+      bdrData = generateBdrCampaignsData();
+      
+      // Try to store in Redis if connected
+      if (redisClient?.isReady) {
+        try {
+          await redisClient.set('bdr-campaigns', JSON.stringify(bdrData));
+          console.log('Stored BDR campaigns data in Redis');
+        } catch (error) {
+          console.error('Error storing BDR campaigns in Redis:', error);
+        }
+      }
+    }
     
-    // Store in Redis
-    await redisClient.set('bdr-campaigns', JSON.stringify(sampleBdrCampaigns));
-    
-    res.json(sampleBdrCampaigns);
+    res.json(bdrData);
   } catch (error) {
+    console.error('Failed to fetch BDR campaigns:', error);
     res.status(500).json({ error: 'Failed to fetch BDR campaigns', details: error.message });
   }
 });
@@ -123,22 +264,97 @@ app.get('/api/bdr-campaigns', verifyToken, async (req, res) => {
 // Get dashboard data endpoint
 app.get('/api/dashboard', verifyToken, async (req, res) => {
   try {
-    // Check if dashboard data exists in Redis
-    const dashboardData = await redisClient.get('dashboard');
+    console.log('Fetching dashboard data...');
+    let dashboardData = null;
     
-    if (dashboardData) {
-      return res.json(JSON.parse(dashboardData));
+    // Try to get data from Redis if connected
+    if (redisClient?.isReady) {
+      try {
+        const redisData = await Promise.race([
+          redisClient.get('dashboard'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis get timeout')), 5000))
+        ]);
+        
+        if (redisData) {
+          console.log('Retrieved dashboard data from Redis');
+          dashboardData = JSON.parse(redisData);
+        }
+      } catch (error) {
+        console.error('Error fetching dashboard data from Redis:', error);
+      }
     }
     
-    // Generate sample data if none exists
-    const sampleDashboardData = generateDashboardData();
+    // Generate sample data if none exists or Redis is not connected
+    if (!dashboardData) {
+      console.log('Generating sample dashboard data');
+      dashboardData = generateDashboardData();
+      
+      // Try to store in Redis if connected
+      if (redisClient?.isReady) {
+        try {
+          await redisClient.set('dashboard', JSON.stringify(dashboardData));
+          console.log('Stored dashboard data in Redis');
+        } catch (error) {
+          console.error('Error storing dashboard data in Redis:', error);
+        }
+      }
+    }
     
-    // Store in Redis
-    await redisClient.set('dashboard', JSON.stringify(sampleDashboardData));
-    
-    res.json(sampleDashboardData);
+    res.json(dashboardData);
   } catch (error) {
+    console.error('Failed to fetch dashboard data:', error);
     res.status(500).json({ error: 'Failed to fetch dashboard data', details: error.message });
+  }
+});
+
+// Add a debug endpoint
+app.get('/api/debug', async (req, res) => {
+  try {
+    // Collect system information
+    const systemInfo = {
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      memoryUsage: process.memoryUsage(),
+      uptime: process.uptime(),
+      env: process.env.NODE_ENV,
+      isVercel: !!process.env.VERCEL
+    };
+
+    // Collect Redis information
+    let redisInfo = {
+      clientCreated: !!redisClient,
+      isReady: redisClient?.isReady || false,
+      isOpen: redisClient?.isOpen || false
+    };
+
+    // Try to ping Redis if connected
+    if (redisClient?.isReady) {
+      try {
+        const pingResult = await redisClient.ping();
+        redisInfo.pingResult = pingResult;
+      } catch (error) {
+        redisInfo.pingError = error.message;
+      }
+    }
+
+    // Return all debug information
+    res.json({
+      timestamp: new Date().toISOString(),
+      system: systemInfo,
+      redis: redisInfo,
+      envVars: {
+        REDIS_HOST: process.env.REDIS_HOST,
+        REDIS_PORT: process.env.REDIS_PORT,
+        REDIS_USERNAME: process.env.REDIS_USERNAME,
+        REDIS_PASSWORD: process.env.REDIS_PASSWORD ? '[REDACTED]' : undefined,
+        JWT_SECRET: process.env.JWT_SECRET ? '[REDACTED]' : undefined,
+        FRONTEND_URL: process.env.FRONTEND_URL
+      }
+    });
+  } catch (error) {
+    console.error('Error in debug endpoint:', error);
+    res.status(500).json({ error: 'Debug endpoint error', details: error.message });
   }
 });
 
@@ -239,5 +455,46 @@ function generateDashboardData() {
 
 // Export the serverless function handler
 export default async function handler(req, res) {
-  return app(req, res);
+  console.log(`Handling ${req.method} request to ${req.url}`);
+  
+  // Add request timestamp for debugging
+  req.requestTimestamp = Date.now();
+  
+  try {
+    // Set a timeout for the entire request
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('Request timeout after 30 seconds'));
+      }, 30000);
+    });
+    
+    // Race between the actual request and the timeout
+    await Promise.race([
+      new Promise((resolve) => {
+        app(req, res);
+        // For API routes that don't end the response
+        if (!res.headersSent) {
+          resolve();
+        }
+      }),
+      timeoutPromise
+    ]);
+    
+    // Log request duration
+    const duration = Date.now() - req.requestTimestamp;
+    console.log(`Request to ${req.url} completed in ${duration}ms`);
+    
+  } catch (error) {
+    console.error('Error handling request:', error);
+    
+    // Only send response if headers haven't been sent yet
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Internal Server Error', 
+        details: error.message,
+        url: req.url,
+        method: req.method
+      });
+    }
+  }
 } 
