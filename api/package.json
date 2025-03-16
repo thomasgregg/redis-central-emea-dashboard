@@ -1,0 +1,9 @@
+{
+  "name": "redis-central-emea-dashboard-api",
+  "version": "1.0.0",
+  "description": "API for Central EMEA Dashboard",
+  "type": "module",
+  "main": "server.js",
+  "author": "Thomas Gregg",
+  "license": "MIT"
+} 

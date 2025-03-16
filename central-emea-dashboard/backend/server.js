@@ -3,9 +3,17 @@ import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import fs from 'fs';
+import morgan from 'morgan';
 
 // Load environment variables
 dotenv.config();
+
+// Get current file and directory paths (ES module equivalent of __dirname)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Initialize Express app
 const app = express();
@@ -1701,7 +1709,7 @@ app.get('/api/reset-bdr-campaigns', authenticateToken, async (req, res) => {
 // For Vercel serverless functions
 if (process.env.VERCEL) {
   // Export the Express app for serverless use
-  module.exports = app;
+  export default app;
 } else {
   // Start the server for local development
   const PORT = process.env.PORT || 5001;
